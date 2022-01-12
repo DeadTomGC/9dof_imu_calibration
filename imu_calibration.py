@@ -4,7 +4,7 @@ import sys
 import numpy as np
 import ipywidgets as widgets
 from threading import Thread
-from ellipsoid_fit import ellipsoid_fit, ellipsoid_plot, data_regularize
+from ellipsoid_fit_python.ellipsoid_fit import ellipsoid_fit, ellipsoid_plot, data_regularize
 
 class calibrator:
     def __init__(self,center,transformation,radius):
