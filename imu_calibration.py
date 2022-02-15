@@ -9,7 +9,11 @@ from ellipsoid_fit_python.ellipsoid_fit import ellipsoid_fit, ellipsoid_plot, da
 class calibrator:
     def __init__(self,center,transformation,radius=1):
         if isinstance(center,str) and isinstance(transformation,str):
-            self.__init__(np.fromfile(center),np.fromfile(transformation).reshape(3,3),radius)
+            try:
+                self.__init__(np.fromfile(center),np.fromfile(transformation).reshape(3,3),radius)
+            except FileNotFoundError:
+                self.center = np.array([0,0,0])
+                self.transformation = np.identity(3)
         elif isinstance(center,np.ndarray) and isinstance(transformation,np.ndarray):
             self.center = center.T
             self.transformation = transformation/radius
@@ -24,16 +28,25 @@ class calibrator:
 class dataCollector(Thread):
     
     
-    def __init__(self):
+    def __init__(self,accelFile = None,gyroFile = None,magFile = None):
         super().__init__()
         self.paused = False
         self.collect = True
         self.Ascale = 65534/4.0
         self.Gscale = 65534/500.0
         self.Mscale = 10.0
-        self.accelData = []
-        self.gyroData = []
-        self.magData = []
+        accel = np.array([])
+        gyro = np.array([])
+        mag = np.array([])
+        if not accelFile==None:
+            accel = np.fromfile(accelFile).reshape(-1,3)
+        if not gyroFile==None:
+            gyro = np.fromfile(gyroFile).reshape(-1,3)
+        if not magFile==None:
+            mag = np.fromfile(magFile).reshape(-1,3)
+        self.accelData = accel.tolist()
+        self.gyroData = gyro.tolist()
+        self.magData = mag.tolist()
         self.IMU = qwiic_icm20948.QwiicIcm20948()
 
         if self.IMU.connected == False:
@@ -47,18 +60,7 @@ class dataCollector(Thread):
         while self.collect:
             if self.IMU.dataReady():
                 self.IMU.getAgmt() # read all axis and temp from sensor, note this also updates all instance variables
-                if not self.paused:   
-                #    print(\
-                # 'Accel X:{: 06f}g'.format(IMU.axRaw/Ascale)\
-                #, '\n', 'Accel Y:{: 06f}g'.format(IMU.ayRaw/Ascale)\
-                #, '\n', 'Accel Z:{: 06f}g'.format(IMU.azRaw/Ascale)\
-                #, '\n', 'Gyro X{: 06f}dps'.format(IMU.gxRaw/Gscale)\
-                #, '\n', 'Gyro Y{: 06f}dps'.format(IMU.gyRaw/Gscale)\
-                #, '\n', 'Gyro Z{: 06f}dps'.format(IMU.gzRaw/Gscale)\
-                #, '\n', 'Mag X{: 06f}'.format(IMU.mxRaw/Mscale)\
-                #, '\n', 'Mag Y{: 06f}'.format(IMU.myRaw/Mscale)\
-                #, '\n', 'Mag Z{: 06f}'.format(IMU.mzRaw/Mscale)\
-                #)
+                if not self.paused:
                     self.accelData.append(np.array([self.IMU.axRaw/self.Ascale,\
                                                     self.IMU.ayRaw/self.Ascale,self.IMU.azRaw/self.Ascale]))
                     self.gyroData.append(np.array([self.IMU.gxRaw/self.Gscale,\
@@ -92,4 +94,9 @@ class dataCollector(Thread):
         magCenter, magTR,magRadius = ellipsoid_fit(regMagData)
         
         return calibrator(accelCenter,accelTR,accelRadius) , calibrator(magCenter,magTR,magRadius)
+    
+    def getGyroCal(self):
+        gyroSum = np.sum(np.array(self.gyroData),axis=0)
+        gyroAvg = gyroSum/len(self.gyroData)
+        return calibrator(gyroAvg,np.identity(3))
         

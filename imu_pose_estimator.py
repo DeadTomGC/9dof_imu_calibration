@@ -2,26 +2,51 @@ import qwiic_icm20948
 import time
 import sys
 import numpy as np
-import ipywidgets as widgets
 from threading import Thread
-from ellipsoid_fit_python.ellipsoid_fit import ellipsoid_fit, ellipsoid_plot, data_regularize
+from imu_calibration import calibrator
+from fusion import Fusion
 
-class calibrator:
-    def __init__(self,center,transformation,radius=1):
-        if isinstance(center,str) and isinstance(transformation,str):
-            self.__init__(np.fromfile(center),np.fromfile(transformation).reshape(3,3),radius)
-        elif isinstance(center,np.ndarray) and isinstance(transformation,np.ndarray):
-            self.center = center.T
-            self.transformation = transformation/radius
-        else:
-            raise Exception('Bad input data types', 'use numpy arrays or strings') 
-        
-    def correct(self,data):
-        data = data-self.center
-        return self.transformation.dot(data.T).T
+def quaternion_rotation_matrix(Q):
+    """
+    Covert a quaternion into a full three-dimensional rotation matrix.
+ 
+    Input
+    :param Q: A 4 element array representing the quaternion (q0,q1,q2,q3) 
+ 
+    Output
+    :return: A 3x3 element matrix representing the full 3D rotation matrix. 
+             This rotation matrix converts a point in the local reference 
+             frame to a point in the global reference frame.
+    """
+    # Extract the values from Q
+    q0 = Q[0]
+    q1 = Q[1]
+    q2 = Q[2]
+    q3 = Q[3]
+     
+    # First row of the rotation matrix
+    r00 = 2 * (q0 * q0 + q1 * q1) - 1
+    r01 = 2 * (q1 * q2 - q0 * q3)
+    r02 = 2 * (q1 * q3 + q0 * q2)
+     
+    # Second row of the rotation matrix
+    r10 = 2 * (q1 * q2 + q0 * q3)
+    r11 = 2 * (q0 * q0 + q2 * q2) - 1
+    r12 = 2 * (q2 * q3 - q0 * q1)
+     
+    # Third row of the rotation matrix
+    r20 = 2 * (q1 * q3 - q0 * q2)
+    r21 = 2 * (q2 * q3 + q0 * q1)
+    r22 = 2 * (q0 * q0 + q3 * q3) - 1
+     
+    # 3x3 rotation matrix
+    rot_matrix = np.array([[r00, r01, r02],
+                           [r10, r11, r12],
+                           [r20, r21, r22]])
+                            
+    return rot_matrix
 
-
-class dataCollector(Thread):
+class imu_data_source(Thread):
     
     
     def __init__(self):
@@ -31,45 +56,50 @@ class dataCollector(Thread):
         self.Ascale = 65534/4.0
         self.Gscale = 65534/500.0
         self.Mscale = 10.0
+        self.subscribers = []
         self.accelData = []
         self.gyroData = []
         self.magData = []
+        self.times = []
         self.IMU = qwiic_icm20948.QwiicIcm20948()
-
+        
         if self.IMU.connected == False:
             print("The Qwiic ICM20948 device isn't connected to the system. Please check your connection", \
                 file=sys.stderr)
 
-        
+    
     def run(self):
         self.IMU.begin()
         self.collect = True
+        t0 = time.time()
         while self.collect:
+            
             if self.IMU.dataReady():
                 self.IMU.getAgmt() # read all axis and temp from sensor, note this also updates all instance variables
                 if not self.paused:   
-                #    print(\
-                # 'Accel X:{: 06f}g'.format(IMU.axRaw/Ascale)\
-                #, '\n', 'Accel Y:{: 06f}g'.format(IMU.ayRaw/Ascale)\
-                #, '\n', 'Accel Z:{: 06f}g'.format(IMU.azRaw/Ascale)\
-                #, '\n', 'Gyro X{: 06f}dps'.format(IMU.gxRaw/Gscale)\
-                #, '\n', 'Gyro Y{: 06f}dps'.format(IMU.gyRaw/Gscale)\
-                #, '\n', 'Gyro Z{: 06f}dps'.format(IMU.gzRaw/Gscale)\
-                #, '\n', 'Mag X{: 06f}'.format(IMU.mxRaw/Mscale)\
-                #, '\n', 'Mag Y{: 06f}'.format(IMU.myRaw/Mscale)\
-                #, '\n', 'Mag Z{: 06f}'.format(IMU.mzRaw/Mscale)\
-                #)
-                    self.accelData.append(np.array([self.IMU.axRaw/self.Ascale,\
-                                                    self.IMU.ayRaw/self.Ascale,self.IMU.azRaw/self.Ascale]))
-                    self.gyroData.append(np.array([self.IMU.gxRaw/self.Gscale,\
-                                                   self.IMU.gyRaw/self.Gscale,self.IMU.gzRaw/self.Gscale]))
-                    self.magData.append(np.array([self.IMU.mxRaw/self.Mscale,\
-                                                  self.IMU.myRaw/self.Mscale,self.IMU.mzRaw/self.Mscale]))
+                    
+                    accel = np.array([self.IMU.axRaw/self.Ascale,\
+                                                    self.IMU.ayRaw/self.Ascale,self.IMU.azRaw/self.Ascale])
+                    gyro = np.array([self.IMU.gxRaw/self.Gscale,\
+                                                   self.IMU.gyRaw/self.Gscale,self.IMU.gzRaw/self.Gscale])
+                    mag = np.array([self.IMU.mxRaw/self.Mscale,\
+                                                  self.IMU.myRaw/self.Mscale,self.IMU.mzRaw/self.Mscale])
+                    deltat = time.time()-t0
+                    t0=time.time()
+                    for ad in self.subscribers:
+                        ad(accel,gyro,mag,deltat)
+                    
+                    #self.times.append(deltat)
+            
+                    #if len(self.times)%30 == 0:
+                        #print(self.times)
 
-                time.sleep(0.03)
+                #time.sleep(0.03)
             else:
                 print("Waiting for data")
                 time.sleep(0.5)
+            
+            
                 
     def togglePauseData(self,b=None):
         self.paused = False if self.paused else True
@@ -80,16 +110,76 @@ class dataCollector(Thread):
         self.collect = False
         self.join()
         
-    def getRawData(self):
-        return np.array(self.accelData),np.array(self.gyroData),np.array(self.magData)
+    def subscribe(self,addData):
+        self.subscribers.append(addData)
     
-    def getCalibration(self):
+class pose_tracker:
+    
+    def __init__(self,data_source,yawSlider = None,pitchSlider = None,rollSlider = None\
+                 ,accelCal=calibrator('data/accelCenter','data/accelTrans'),\
+                 gyroCal=calibrator('data/gyroCenter','data/gyroTrans'),magCal=calibrator('data/magCenter','data/magTrans')):
+        self.data_source = data_source
+        self.magCal = magCal
+        self.gyroCal = gyroCal
+        self.accelCal = accelCal
+        self.orientation = np.array([1,0,0])
+        self.count = 0
+        self.fus = Fusion()
+        self.yawSlider = yawSlider
+        self.pitchSlider = pitchSlider
+        self.rollSlider = rollSlider
+        self.data_source.subscribe(self.addData)
+        self.subscribers = []
         
-        regAccelData = data_regularize(np.array(self.accelData))
-        regMagData = data_regularize(np.array(self.magData))
+    def calibrateData(self,accel,gyro,mag):
+        return self.accelCal.correct(accel),self.gyroCal.correct(gyro),self.magCal.correct(mag)
         
-        accelCenter, accelTR,accelRadius = ellipsoid_fit(regAccelData)
-        magCenter, magTR,magRadius = ellipsoid_fit(regMagData)
+    def subscribe(self,addData):
+        self.subscribers.append(addData)
         
-        return calibrator(accelCenter,accelTR,accelRadius) , calibrator(magCenter,magTR,magRadius)
+    def addData(self,accel,gyro,mag,deltat):
+        accel,gyro,mag = self.calibrateData(accel,gyro,mag)
+        self.fus.update(tuple(accel),tuple(gyro),tuple([mag[0],-mag[1],-mag[2]]),deltat)
         
+        for ad in self.subscribers:
+            ad(accel,gyro,mag,self.fus.q,deltat)
+        
+        self.count+=1
+        
+        if self.count > 20 and not self.yawSlider == None\
+            and not self.pitchSlider == None\
+            and not self.rollSlider == None:
+            self.yawSlider.value = self.fus.heading
+            self.pitchSlider.value = self.fus.pitch
+            self.rollSlider.value = self.fus.roll
+            #print(self.fus.heading,self.fus.pitch,self.fus.roll)
+            self.count=0
+class integrator:
+    
+    def __init__(self,pose_tracker):
+        self.pose_tracker = pose_tracker
+        self.velocity = np.array([0,0,0])
+        self.gravity = np.array([0,0,1])
+        self.pose_tracker.subscribe(self.addData)
+        self.count = 0
+        self.cycles = 0;
+        
+    def addData(self,accel,gyro,mag,quat,deltat):
+        RM = quaternion_rotation_matrix(quat)
+        accel_in_real_world = RM.dot(accel.T)
+        accel_nograv = accel_in_real_world-self.gravity
+        self.velocity = self.velocity + 9.8*accel_nograv*deltat
+        self.cycles+=1
+        if self.cycles > 200:
+            self.gravity = self.gravity*0.999 + accel_in_real_world*0.001
+        if np.linalg.norm(self.velocity)>=0.01: #random step compensation (possible bad idea)
+            self.velocity = self.velocity - 0.001*self.velocity/np.linalg.norm(self.velocity)
+            
+        self.count+=1
+        
+        if self.count > 100:
+            print(self.velocity)
+            #print(accel_in_real_world)
+            #print(accel)
+            #print(RM)
+            self.count=0
