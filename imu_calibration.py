@@ -32,8 +32,8 @@ class dataCollector(Thread):
         super().__init__()
         self.paused = False
         self.collect = True
-        self.Ascale = 65534/4.0
-        self.Gscale = 65534/500.0
+        self.Ascale = 65534/8.0
+        self.Gscale = 65534/1000.0
         self.Mscale = 10.0
         accel = np.array([])
         gyro = np.array([])
@@ -56,6 +56,12 @@ class dataCollector(Thread):
         
     def run(self):
         self.IMU.begin()
+        self.IMU.setFullScaleRangeAccel(qwiic_icm20948.gpm4)
+        self.IMU.setFullScaleRangeGyro(qwiic_icm20948.dps500)
+        self.IMU.enableDlpfAccel(True)
+        self.IMU.enableDlpfGyro(True)
+        self.IMU.setDLPFcfgAccel(qwiic_icm20948.acc_d111bw4_n136bw)
+        self.IMU.setDLPFcfgGyro(qwiic_icm20948.gyr_d119bw5_n154bw3)
         self.collect = True
         while self.collect:
             if self.IMU.dataReady():
